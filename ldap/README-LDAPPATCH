@@ -1,0 +1,19 @@
+This patch adds an option to LDAP Authentication to configure the bind user as the user logging in.
+
+Where to use:
+In some LDAP databases, due to restricted ACLs, ldap searches are only allowed to the self bind user. 
+Due to privacy and security reasons, many universities have this policty bydefault. 
+The LDAP directory does not allow anonymous browsing nor exist an account that view the attributes of others.
+By this reason, the user that is logging in, needs to be set as the bind user.
+
+Programming Notes:
+Instead of using the normal methods like ldap_connect, 
+I save my first binded connection in a session variable in order to don't need to continously authenticate in the other methods. 
+This way I don't need to keep anything  passwords.
+
+Author:
+Alberto Benito campo
+DTE (Electronic Technology Department) at ETSIT - UPM (Technical University of Madrid)
+a.benitoc@ieee.org
+
+

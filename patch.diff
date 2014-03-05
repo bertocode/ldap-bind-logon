@@ -1,0 +1,321 @@
+diff -Naur ldaporiginal/auth.php ldap/auth.php
+--- ldaporiginal/auth.php	2014-02-21 00:13:00.166809035 +0100
++++ ldap/auth.php	2014-02-21 00:06:23.402811652 +0100
+@@ -20,7 +20,8 @@
+  *
+  * @package auth_ldap
+  * @author Martin Dougiamas
+- * @author Iñaki Arenaza
++ * @author Iñaki Arenaza 
++ * @modder: Alberto Benito
+  * @license http://www.gnu.org/copyleft/gpl.html GNU Public License
+  */
+ 
+@@ -162,6 +163,30 @@
+         $extusername = textlib::convert($username, 'utf-8', $this->config->ldapencoding);
+         $extpassword = textlib::convert($password, 'utf-8', $this->config->ldapencoding);
+ 
++	//Check the new added functionality
++	if($this->config->bind_with_logon){
++	
++		//We don't use ldap_connect because it's easier to get it the times we need, instead modifying original one
++		$ldapconn = ldap_connect($this->config->host_url);
++		ldap_set_option($ldapconn, LDAP_OPT_PROTOCOL_VERSION, $this->config->ldap_version); //Binding problem if we don't use
++	
++	
++		//Create Contexts
++		$ldap_contexts = explode(";",$this->config->contexts);
++	
++		//Create loggon distinguished name, information stored in first position $ldap_contexts
++		$logondn=$this->config->user_attribute. "=" .$extusername.",".$ldap_contexts[0];
++		
++		//Binds User
++		$result = @ldap_bind($ldapconn, $logondn, $extpassword);
++		
++		if ($result) {
++			$_SESSION['c']=$ldapconn;  // I had problems storaging connection in $this->ldap_connection, therefore I used Session variable instead			
++		} 
++		return $result;
++	}
++	else {
++	
+         // Before we connect to LDAP, check if this is an AD SSO login
+         // if we succeed in this block, we'll return success early.
+         //
+@@ -228,7 +253,8 @@
+         }
+         $this->ldap_close();
+         return $ldap_login;
+-    }
++	}  
++   }
+ 
+     /**
+      * Reads user information from ldap and returns it in array()
+@@ -242,7 +268,78 @@
+      */
+     function get_userinfo($username) {
+         $extusername = textlib::convert($username, 'utf-8', $this->config->ldapencoding);
+-
++	//chekcs new functionality
++	if($this->config->bind_with_logon){
++	
++	//Create attribute array
++	$search_attribs = array();
++        $attrmap = $this->ldap_attributes();
++        foreach ($attrmap as $key => $values) {
++            if (!is_array($values)) {
++                $values = array($values);
++            }
++            foreach ($values as $value) {
++                if (!in_array($value, $search_attribs)) {
++                    array_push($search_attribs, $value);
++                }
++            }
++        }
++	
++	//We do authentication and search to LDAP servers
++	$ldap_contexts = explode(";",$this->config->contexts);
++	
++       	$logondn=($this->config->user_attribute). "=" .$extusername.",".$ldap_contexts[0];
++	
++        $con=$_SESSION['c'];
++	
++	$sr = ldap_search($con, $logondn, "(objectclass=*)");
++	
++	$res=ldap_get_entries_moodle($con, $sr);
++	
++        
++	if (empty($res)) {
++            $this->ldap_close();
++            return false; // entry not found
++        }
++	
++	//Reorganization of LDAP query to be according Moodle initial specifications
++        $result = array();
++	foreach ($attrmap as $key => $values) {
++            if (!is_array($values)) {
++                $values = array($values);
++            }
++	   
++            $ldapval = NULL;
++            foreach ($values as $value) {
++                $entry = array_change_key_case($res[0], CASE_LOWER);
++		
++                if (($value == 'uid') || ($value == 'distinguishedname')) {
++                    $result[$key] = $extusername;
++                    continue;
++                }
++                if (!array_key_exists($value, $entry)) {
++                    continue; // wrong data mapping!
++                }
++                if (is_array($entry[$value])) {
++                    $newval = textlib::convert($entry[$value][0], $this->config->ldapencoding, 'utf-8');
++                } else {
++                    $newval = textlib::convert($entry[$value], $this->config->ldapencoding, 'utf-8');
++                }
++                if (!empty($newval)) { // favour ldap entries that are set
++                    $ldapval = $newval;
++                }
++            }
++            if (!is_null($ldapval)) {
++                $result[$key] = $ldapval;
++            }
++        }
++	
++	//We don't close connection yet, need it in sync_users
++        return $result;
++	}
++	
++	else{
++	
+         $ldapconnection = $this->ldap_connect();
+         if(!($user_dn = $this->ldap_find_userdn($ldapconnection, $extusername))) {
+             $this->ldap_close();
+@@ -304,6 +401,7 @@
+ 
+         $this->ldap_close();
+         return $result;
++	}
+     }
+ 
+     /**
+@@ -620,10 +718,16 @@
+         $result = 0;
+ 
+         $extusername = textlib::convert($username, 'utf-8', $this->config->ldapencoding);
+-
+-        $ldapconnection = $this->ldap_connect();
+-        $user_dn = $this->ldap_find_userdn($ldapconnection, $extusername);
+-        $search_attribs = array($this->config->expireattr);
++	
++       if($this->config->bind_with_logon)$ldapconnection = $_SESSION['c'];
++       else $ldapconnection = $this->ldap_connect();
++	if($this->config->bind_with_logon){
++	$ldap_contexts = explode(";",$this->config->contexts);
++	$user_dn=($this->config->user_attribute). "=" .$extusername.",".$ldap_contexts[0];
++	}
++	else $user_dn = $this->ldap_find_userdn($ldapconnection, $extusername);
++       
++       $search_attribs = array($this->config->expireattr);	
+         $sr = ldap_read($ldapconnection, $user_dn, '(objectClass=*)', $search_attribs);
+         if ($sr)  {
+             $info = ldap_get_entries_moodle($ldapconnection, $sr);
+@@ -660,10 +764,10 @@
+      */
+     function sync_users($do_updates=true) {
+         global $CFG, $DB;
+-
++	
+         print_string('connectingldap', 'auth_ldap');
+-        $ldapconnection = $this->ldap_connect();
+-
++	$ldapconnection = $this->ldaconnection;
++      
+         $dbman = $DB->get_manager();
+ 
+     /// Define table user to be created
+@@ -1800,6 +1904,11 @@
+         if (!isset($config->preventpassindb)) {
+              $config->preventpassindb = 0;
+         }
++	
++	if (!isset($config->bind_with_logon)) {
++		$config->bind_with_logon = 0;
++	}
++	
+         if (!isset($config->bind_dn)) {
+             $config->bind_dn = '';
+         }
+@@ -1875,8 +1984,8 @@
+ 
+         // Try to remove duplicates before storing the contexts (to avoid problems in sync_users()).
+         $config->contexts = explode(';', $config->contexts);
+-        $config->contexts = array_map(create_function('$x', 'return textlib::strtolower(trim($x));'),
+-                                      $config->contexts);
++      //  $config->contexts = array_map(create_function('$x', 'return textlib::strtolower(trim($x);'),
++        //                              $config->contexts);
+         $config->contexts = implode(';', array_unique($config->contexts));
+ 
+         // Save settings
+@@ -1890,6 +1999,7 @@
+         set_config('search_sub', $config->search_sub, $this->pluginconfig);
+         set_config('opt_deref', $config->opt_deref, $this->pluginconfig);
+         set_config('preventpassindb', $config->preventpassindb, $this->pluginconfig);
++	set_config('bind_with_logon', $config->bind_with_logon, $this->pluginconfig);
+         set_config('bind_dn', trim($config->bind_dn), $this->pluginconfig);
+         set_config('bind_pw', $config->bind_pw, $this->pluginconfig);
+         set_config('ldap_version', $config->ldap_version, $this->pluginconfig);
+diff -Naur ldaporiginal/config.html ldap/config.html
+--- ldaporiginal/config.html	2014-02-21 00:12:35.990809177 +0100
++++ ldap/config.html	2014-02-20 23:29:41.070826237 +0100
+@@ -31,6 +31,11 @@
+ if (!isset($config->preventpassindb)) {
+     $config->preventpassindb = 0;
+ }
++
++if (!isset($config->bind_with_logon)) {
++	$config->bind_with_logon = 0; 
++}
++
+ if (!isset($config->bind_dn)) {
+     $config->bind_dn = '';
+ }
+@@ -195,17 +200,29 @@
+         <h4><?php print_string('auth_ldap_bind_settings', 'auth_ldap') ?></h4>
+     </td>
+ </tr>
++
+ <tr valign="top" class="required">
+     <td align="right">
+-        <label for="menupreventpassindb"><?php print_string('auth_ldap_preventpassindb_key', 'auth_ldap') ?></label>
++    <label for="menupreventpassindb"><?php print_string('auth_ldap_preventpassindb_key', 'auth_ldap') ?></label>
+     </td>
+     <td>
+-        <?php echo html_writer::select($yesno, 'preventpassindb', $config->preventpassindb, false); ?>
++    <?php echo html_writer::select($yesno, 'preventpassindb', $config->preventpassindb, false); ?>
+     </td>
+     <td>
+-        <?php print_string('auth_ldap_preventpassindb', 'auth_ldap') ?>
++    <?php print_string('auth_ldap_preventpassindb', 'auth_ldap') ?>
+     </td>
+ </tr>
++
++<tr valign="top" class="required">
++     <td align="right">
++		<label for="menubind_with_logon"><?php print_string('auth_ldap_bind_with_logon_key','auth_ldap') ?></label></td>
++     <td>
++			<?php echo html_writer::select($yesno, 'bind_with_logon', $config->bind_with_logon, false); ?>
++	 </td><td>
++     <?php print_string('auth_ldap_bind_with_logon','auth_ldap') ?>
++     </td>
++</tr>
++
+ <tr valign="top" class="required">
+     <td align="right">
+         <label for="bind_dn"><?php print_string('auth_ldap_bind_dn_key', 'auth_ldap') ?></label>
+diff -Naur ldaporiginal/lang/en/auth_ldap.php ldap/lang/en/auth_ldap.php
+--- ldaporiginal/lang/en/auth_ldap.php	2014-02-21 00:13:06.154808973 +0100
++++ ldap/lang/en/auth_ldap.php	2014-02-20 23:25:39.614827817 +0100
+@@ -31,6 +31,8 @@
+ $string['auth_ldap_bind_pw'] = 'Password for bind-user.';
+ $string['auth_ldap_bind_pw_key'] = 'Password';
+ $string['auth_ldap_bind_settings'] = 'Bind settings';
++$string['auth_ldap_bind_with_logon']= 'Check this if you want to use username plus contexts as distinguished name, instead of normal binding';
++$string['auth_ldap_bind_with_logon_key']= 'Bind with logon data';
+ $string['auth_ldap_contexts'] = 'List of contexts where users are located. Separate different contexts with \';\'. For example: \'ou=users,o=org; ou=others,o=org\'';
+ $string['auth_ldap_contexts_key'] = 'Contexts';
+ $string['auth_ldap_create_context'] = 'If you enable user creation with email confirmation, specify the context where users are created. This context should be different from other users to prevent security issues. You don\'t need to add this context to ldap_context-variable, Moodle will search for users from this context automatically.<br /><b>Note!</b> You have to modify the method user_create() in file auth/ldap/auth.php to make user creation work';
+diff -Naur ldaporiginal/orig/version.php ldap/orig/version.php
+--- ldaporiginal/orig/version.php	1970-01-01 01:00:00.000000000 +0100
++++ ldap/orig/version.php	2014-02-16 16:03:27.092021306 +0100
+@@ -0,0 +1,30 @@
++<?php
++// This file is part of Moodle - http://moodle.org/
++//
++// Moodle is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, either version 3 of the License, or
++// (at your option) any later version.
++//
++// Moodle is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License for more details.
++//
++// You should have received a copy of the GNU General Public License
++// along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
++
++/**
++ * Version details
++ *
++ * @package    auth_ldap
++ * @author     Martin Dougiamas
++ * @author     Iñaki Arenaza
++ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
++ */
++
++defined('MOODLE_INTERNAL') || die();
++
++$plugin->version   = 2013052100;        // The current plugin version (Date: YYYYMMDDXX)
++$plugin->requires  = 2013050100;        // Requires this Moodle version
++$plugin->component = 'auth_ldap';       // Full name of the plugin (used for diagnostics)
+diff -Naur ldaporiginal/README-LDAPPATCH ldap/README-LDAPPATCH
+--- ldaporiginal/README-LDAPPATCH	1970-01-01 01:00:00.000000000 +0100
++++ ldap/README-LDAPPATCH	2014-02-20 23:46:10.106819707 +0100
+@@ -0,0 +1,15 @@
++This patch adds an option to LDAP Authentication to configure the bind user as the user logging in.
++
++Where to use:
++In some LDAP databases, due to restricted ACLs, ldap searches are only allowed to the self bind user. Due to privacy and security reasons, many universities have this policty bydefault. The LDAP directory does not allow anonymous browsing nor exist an account that view the attributes of others.
++By this reason, the user that is logging in, needs to be set as the bind user.
++
++Programming Notes:
++Instead of using the normal methods like ldap_connect, I save my first binded connection in a session variable in order to don't need to continously authenticate in the other methods. This way I don't need to keep anything  passwords.
++
++Author:
++Alberto Benito campo
++DTE (Electronic Technology Department) at ETSIT - UPM (Technical University of Madrid)
++a.benitoc@ieee.org
++
++
